@@ -16,3 +16,9 @@ Crea un script de automatización de tu servicio que muestre nada más arrancars
 -por tipo
 Permitir editar las opciones de configuración según el servicio, en el caso de FTP, enfocarlo a la gestión de usuarios y sus respectivos permisos en carpetas y ficheros.
 Se debe poder ejecutar cualquier opción mediante comandos con parámetros directamente desde la consola
+
+
+---------------------------------------------
+
+
+mODIFICACION DE PRUEBA
