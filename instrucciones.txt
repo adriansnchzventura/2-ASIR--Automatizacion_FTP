@@ -1,0 +1,24 @@
+Genera un paso a paso para realizar el siguiente proyecto de automatización del servicio FTP en Ubuntu:
+Crea un repositorio de GIT donde guardes diferentes versiones de tus ficheros de configuración del servicio implementado y los cambios que vayáis realizando cada integrante del grupo
+Crea una imagen de UBUNTU contenerizada con las modificaciones necesarias para implementar tu servicio mediante docker en otra máquina y probar su funcionamiento. Crea además un DockerFile que la implemente automáticamente.
+Crea un script de automatización de tu servicio que muestre nada más arrancarse la siguiente información (de forma legible):
+· Datos de red de tu equipo 
+· Estado del servicio
+· Un menú que permita ejecutar las diferentes acciones:
++Instalación del servicio
+-Con comandos
+-Con Docker
++Eliminación del servicio
++Puesta en marcha
++Parada
++Consultar logs:
+-por fecha
+-por tipo
+Permitir editar las opciones de configuración según el servicio, en el caso de FTP, enfocarlo a la gestión de usuarios y sus respectivos permisos en carpetas y ficheros.
+Se debe poder ejecutar cualquier opción mediante comandos con parámetros directamente desde la consola
+
+
+---------------------------------------------
+
+
+mODIFICACION DE PRUEBA
