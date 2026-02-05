@@ -37,7 +37,7 @@ n_run(){ systemctl is-active --quiet vsftpd 2>/dev/null; }
 status(){
   if d_run; then echo -e "${GREEN}ACTIVO (Docker)${NC}"
   elif n_run; then echo -e "${GREEN}ACTIVO (Nativo)${NC}"
-  else echo -e "${RED}DETENIDO${NC}"; fi
+  else echo -e "${RED}INACTIVO${NC}"; fi
 }
 
 setup_docker_files(){
