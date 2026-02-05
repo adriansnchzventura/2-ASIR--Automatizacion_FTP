@@ -12,7 +12,8 @@ CONTAINER_NAME="ftp-server-prod"
 PASV_MIN=40000
 PASV_MAX=40010
 
-if [ -t 1 ] && command -v tput >/dev/null 2>&1 && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
+# Colores mejorados
+if [ -t 1 ] && command -v tput >/dev/null 2>&1; then
   GREEN='\033[0;32m'; BLUE='\033[0;34m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; RED='\033[0;31m'; NC='\033[0m'
 else
   GREEN=""; BLUE=""; YELLOW=""; CYAN=""; RED=""; NC=""
@@ -23,15 +24,22 @@ ok(){ echo -e "${GREEN}[OK] $1${NC}"; }
 info(){ echo -e "${BLUE}[INFO] $1${NC}"; }
 warn(){ echo -e "${YELLOW}[WARN] $1${NC}"; }
 
-root(){ [ "$EUID" -eq 0 ] || die "Ejecuta con sudo."; }
-ip_host(){ ip route get 1 2>/dev/null | awk '{print $7;exit}'; }
-pause(){ read -p "Enter para continuar..." ; }
+root(){ [ "$EUID" -eq 0 ] || die "Ejecuta con sudo (EUID 0)."; }
+
+ip_host(){
+    # Intenta obtener IP de interfaz específica, si no, la primaria
+    local ip=$(ip -4 addr show enp0s8 | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1)
+    [ -z "$ip" ] && ip=$(hostname -I | awk '{print $1}')
+    echo "$ip"
+}
+
+pause(){ read -p "Presiona Enter para continuar..." ; }
 
 docker_ok(){ command -v docker >/dev/null 2>&1; }
-d_exists(){ docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$CONTAINER_NAME"; }
-d_run(){ docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$CONTAINER_NAME"; }
+d_exists(){ docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; }
+d_run(){ docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; }
 
-n_inst(){ systemctl list-unit-files 2>/dev/null | grep -q "^vsftpd"; }
+n_inst(){ command -v vsftpd >/dev/null 2>&1; }
 n_run(){ systemctl is-active --quiet vsftpd 2>/dev/null; }
 
 status(){
@@ -44,7 +52,7 @@ setup_docker_files(){
   mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$DOCKER_DIR"
   touch "$CONFIG_DIR/users.list"
 
-  # 1. Configuración de VSFTP optimizada para Docker
+  # Configuración VSFTP
   cat > "$CONFIG_DIR/vsftpd.conf" <<EOF
 listen=YES
 listen_ipv6=NO
@@ -63,98 +71,84 @@ pam_service_name=vsftpd
 pasv_enable=YES
 pasv_min_port=$PASV_MIN
 pasv_max_port=$PASV_MAX
-# Importante para que docker logs capture la actividad
+# La IP pasiva se puede sobreescribir por variable de entorno
+pasv_address=$(ip_host)
 xferlog_std_format=NO
 log_ftp_protocol=YES
 vsftpd_log_file=/var/log/vsftpd.log
-xferlog_file=/var/log/vsftpd.log
 seccomp_sandbox=NO
 EOF
 
-  # 2. Entrypoint: Gestión de usuarios y arranque
+  # Entrypoint corregido para manejar mejor los permisos de volumen
   cat > "$DOCKER_DIR/entrypoint.sh" <<'EOF'
 #!/bin/bash
 set -e
 
-# Configurar IP Pasiva si viene en variable de entorno
+# Actualizar IP pasiva si se pasa por ENV
 if [ -n "$PASV_ADDRESS" ]; then
-    grep -q "pasv_address" /etc/vsftpd/vsftpd.conf || echo "pasv_address=$PASV_ADDRESS" >> /etc/vsftpd/vsftpd.conf
+    sed -i "s/^pasv_address=.*/pasv_address=$PASV_ADDRESS/" /etc/vsftpd/vsftpd.conf
 fi
 
-# Crear usuarios desde users.list
 while IFS=':' read -r u p; do
-  [[ "$u" =~ ^#.*$ ]] && continue
-  [ -z "$u" ] && continue
-  
-  # Si el usuario no existe, lo creamos
+  [[ "$u" =~ ^#.*$ ]] || [ -z "$u" ] && continue
+ 
   if ! id "$u" &>/dev/null; then
-    # Creamos usuario con home fija para mapeo de volúmenes
     useradd -m -d "/home/vsftpd/$u" -s /bin/sh "$u"
     echo "$u:$p" | chpasswd
-    
-    # Aseguramos directorios y permisos
     mkdir -p "/home/vsftpd/$u/upload"
-    # El root del chroot debe ser root:root, la subcarpeta upload es del usuario
+    # Requisito vsftpd: el root del chroot NO debe tener permiso de escritura
     chown root:root "/home/vsftpd/$u"
-    chmod 755 "/home/vsftpd/$u"
+    chmod 555 "/home/vsftpd/$u"
     chown "$u:$u" "/home/vsftpd/$u/upload"
-    
-    echo "Usuario $u configurado."
+    chmod 755 "/home/vsftpd/$u/upload"
   else
-    # Si ya existe (reinicio), actualizamos contraseña por si cambió
     echo "$u:$p" | chpasswd
   fi
 done < /etc/vsftpd/users.list
 
 echo "Iniciando VSFTP..."
-# Ejecutamos vsftpd
+# Log a stdout y archivo simultáneamente
+touch /var/log/vsftpd.log
+tail -f /var/log/vsftpd.log &
 exec /usr/sbin/vsftpd /etc/vsftpd/vsftpd.conf
 EOF
   chmod +x "$DOCKER_DIR/entrypoint.sh"
 
-  # 3. Dockerfile: Construcción de la imagen
   cat > "$DOCKER_DIR/Dockerfile" <<EOF
 FROM ubuntu:22.04
-
 ENV DEBIAN_FRONTEND=noninteractive
-
-# Instalamos vsftpd y utilidades necesarias
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends vsftpd iproute2 && \
-    rm -rf /var/lib/apt/lists/*
-
-# Preparamos directorios obligatorios para vsftpd
-RUN mkdir -p /var/run/vsftpd/empty && \
-    mkdir -p /var/log && \
-    touch /var/log/vsftpd.log
-
-# Redireccionamos logs a stdout para que "docker logs" funcione
-RUN ln -sf /dev/stdout /var/log/vsftpd.log
-
+RUN apt-get update && apt-get install -y --no-install-recommends vsftpd iproute2 && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /var/run/vsftpd/empty /home/vsftpd
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
 EXPOSE 20 21 $PASV_MIN-$PASV_MAX
-
 CMD ["/entrypoint.sh"]
 EOF
 }
 
 install_docker(){
-  root; docker_ok || die "Docker no está instalado."
+  root
+  docker_ok || die "Docker no instalado."
+ 
+  info "Limpiando contenedores previos..."
+  docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+ 
   setup_docker_files
+ 
   info "Construyendo imagen..."
-  docker build -t "$IMAGE_NAME" "$DOCKER_DIR" || die "Error construyendo imagen."
-  docker rm -f "$CONTAINER_NAME" 2>/dev/null
-  info "Creando contenedor..."
+  docker build -t "$IMAGE_NAME" "$DOCKER_DIR" || die "Error en build."
+
+  local ACT_IP=$(ip_host)
+  info "Usando IP Pasiva: $ACT_IP"
+ 
   docker run -d --name "$CONTAINER_NAME" --restart unless-stopped \
     -p 21:21 -p "${PASV_MIN}-${PASV_MAX}:${PASV_MIN}-${PASV_MAX}" \
-    -e PASV_ADDRESS="$(ip_host)" \
-    -v "$CONFIG_DIR/vsftpd.conf":/etc/vsftpd/vsftpd.conf \
-    -v "$CONFIG_DIR/users.list":/etc/vsftpd/users.list \
+    -e PASV_ADDRESS="$ACT_IP" \
+    -v "$CONFIG_DIR/vsftpd.conf":/etc/vsftpd/vsftpd.conf:ro \
+    -v "$CONFIG_DIR/users.list":/etc/vsftpd/users.list:ro \
     -v "$DATA_DIR":/home/vsftpd \
-    "$IMAGE_NAME" >/dev/null
-  ok "FTP instalado (Docker)."
+    "$IMAGE_NAME" || die "Error al arrancar."
+
+  ok "Instalado en Docker. IP: $ACT_IP"
 }
 
 install_native(){
@@ -199,20 +193,21 @@ create_user(){
   local u="$1" p="$2"
   [ -z "$u" ] && read -p "Usuario: " u
   [ -z "$p" ] && read -s -p "Contraseña: " p && echo ""
+ 
   if d_exists; then
-    mkdir -p "$CONFIG_DIR"; touch "$CONFIG_DIR/users.list"
+    mkdir -p "$CONFIG_DIR"
+    # Evitar duplicados
     sed -i "/^$u:/d" "$CONFIG_DIR/users.list"
     echo "$u:$p" >> "$CONFIG_DIR/users.list"
-    d_run && docker restart "$CONTAINER_NAME" >/dev/null
-    ok "Usuario $u creado/actualizado (Docker)."
-    return
+    docker restart "$CONTAINER_NAME"
+    ok "Usuario $u actualizado en Docker."
+  elif n_inst; then
+    id "$u" &>/dev/null || useradd -m "$u"
+    echo "$u:$p" | chpasswd
+    ok "Usuario $u actualizado en Nativo."
+  else
+    die "No hay instalación."
   fi
-  if n_inst; then
-    id "$u" &>/dev/null && echo "$u:$p" | chpasswd || (useradd -m "$u" && echo "$u:$p" | chpasswd)
-    ok "Usuario $u creado/actualizado (Nativo)."
-    return
-  fi
-  die "No hay instalación detectada."
 }
 
 logs_tail(){
